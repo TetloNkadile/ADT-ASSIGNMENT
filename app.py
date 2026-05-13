@@ -1332,7 +1332,7 @@ def revenue_trend(data: Dict[str, pd.DataFrame], height: int = 250) -> None:
     temp["period_group"] = temp[date_col].dt.to_period("D").dt.to_timestamp()
     trend = temp.groupby("period_group", as_index=False)["revenue"].sum()
 
-    fig = px.line(trend, x="period_group", y="revenue", title="Multi-Metric Performance Trend")
+    fig = px.line(trend, x="period_group", y="revenue", title="Revenue Trend")
     fig.update_traces(line=dict(width=2.2), mode="lines+markers", marker=dict(size=4))
     plot(fig, height=height)
 
