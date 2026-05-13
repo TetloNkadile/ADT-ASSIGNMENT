@@ -1661,17 +1661,27 @@ def sales_velocity_treemap(data: Dict[str, pd.DataFrame], height: int = 250) -> 
 
 def sales_team_driver_radar(data: Dict[str, pd.DataFrame], height: int = 250) -> None:
     sales = df(data, "sales")
-    group_col = "region" if "region" in sales.columns else "salesperson" if "salesperson" in sales.columns else None
+
+    group_col = (
+        "region" if "region" in sales.columns
+        else "salesperson" if "salesperson" in sales.columns
+        else None
+    )
+
     if sales.empty or group_col is None or "revenue" not in sales.columns:
-        empty_visual("Radar view needs grouped sales performance data.")
+        empty_visual("Sales driver view needs grouped sales performance data.")
         return
 
     temp = sales.copy()
+
     temp["deal_size_metric"] = temp["deal_size"] if "deal_size" in temp.columns else temp["revenue"]
     temp["cycle_metric"] = temp["cycle_days"] if "cycle_days" in temp.columns else 30
     temp["activity_metric"] = 1
+
     if "pipeline_stage" in temp.columns:
         temp["win_flag"] = temp["pipeline_stage"].astype(str).str.lower().eq("closed").astype(int)
+    elif "win_loss_status" in temp.columns:
+        temp["win_flag"] = temp["win_loss_status"].astype(str).str.lower().eq("won").astype(int)
     else:
         temp["win_flag"] = 0
 
@@ -1679,39 +1689,61 @@ def sales_team_driver_radar(data: Dict[str, pd.DataFrame], height: int = 250) ->
         revenue=("revenue", "sum"),
         avg_deal=("deal_size_metric", "mean"),
         activity=("activity_metric", "sum"),
-        velocity=("cycle_metric", "mean"),
-        wins=("win_flag", "mean"),
-    ).sort_values("revenue", ascending=False).head(3)
+        cycle_days=("cycle_metric", "mean"),
+        win_rate=("win_flag", "mean"),
+    )
+
     if grouped.empty:
-        empty_visual("Not enough grouped sales data for the radar chart.")
+        empty_visual("Not enough grouped sales data for the sales driver view.")
         return
 
-    grouped["velocity_score"] = 1 / grouped["velocity"].replace(0, np.nan)
-    metrics = {
-        "Lead Generation": grouped["activity"],
-        "Deal Size": grouped["avg_deal"],
-        "Quota Attainment": grouped["revenue"],
-        "Win Rate": grouped["wins"].fillna(0),
-        "Velocity": grouped["velocity_score"].fillna(0),
-    }
-    norm = {}
-    for k, vals in metrics.items():
-        vals = pd.to_numeric(vals, errors="coerce").fillna(0)
-        max_v = float(vals.max()) if len(vals) else 1.0
-        norm[k] = (vals / max_v * 100).round(1) if max_v else vals
+    # Convert cycle time into velocity score: shorter cycle = better
+    grouped["velocity_score"] = 1 / grouped["cycle_days"].replace(0, np.nan)
+    grouped["velocity_score"] = grouped["velocity_score"].fillna(0)
 
-    categories = list(norm.keys())
-    fig = go.Figure()
-    for idx, row in grouped.reset_index(drop=True).iterrows():
-        values = [float(norm[c].iloc[idx]) for c in categories]
-        values.append(values[0])
-        fig.add_trace(go.Scatterpolar(
-            r=values,
-            theta=categories + [categories[0]],
-            fill="toself",
-            name=str(row[group_col]),
-        ))
-    fig.update_layout(title="Team Driver Radar", polar=dict(radialaxis=dict(visible=True, range=[0, 100])))
+    score_columns = {
+        "Revenue Strength": "revenue",
+        "Deal Size": "avg_deal",
+        "Lead Activity": "activity",
+        "Win Rate": "win_rate",
+        "Sales Velocity": "velocity_score",
+    }
+
+    for score_name, col in score_columns.items():
+        max_value = grouped[col].max()
+        if max_value and max_value > 0:
+            grouped[score_name] = grouped[col] / max_value * 100
+        else:
+            grouped[score_name] = 0
+
+    grouped["Overall Driver Score"] = grouped[list(score_columns.keys())].mean(axis=1)
+
+    top_groups = grouped.sort_values("Overall Driver Score", ascending=False).head(5)
+
+    fig = px.bar(
+        top_groups.sort_values("Overall Driver Score"),
+        x="Overall Driver Score",
+        y=group_col,
+        orientation="h",
+        text=top_groups.sort_values("Overall Driver Score")["Overall Driver Score"].round(1),
+        title="Sales Team Driver Scorecard",
+        hover_data={
+            "Revenue Strength": ":.1f",
+            "Deal Size": ":.1f",
+            "Lead Activity": ":.1f",
+            "Win Rate": ":.1f",
+            "Sales Velocity": ":.1f",
+            "Overall Driver Score": ":.1f",
+        },
+    )
+
+    fig.update_traces(textposition="outside")
+    fig.update_layout(
+        xaxis_title="Overall Sales Driver Score",
+        yaxis_title=group_col.title(),
+        showlegend=False,
+    )
+
     plot(fig, height=height)
 
 
@@ -1730,45 +1762,112 @@ def sales_deal_stage_funnel(data: Dict[str, pd.DataFrame], height: int = 250) ->
 
 def sales_driver_correlation_matrix(data: Dict[str, pd.DataFrame], height: int = 250) -> None:
     sales = df(data, "sales")
-    group_col = "region" if "region" in sales.columns else "salesperson" if "salesperson" in sales.columns else None
+
+    group_col = (
+        "region" if "region" in sales.columns
+        else "salesperson" if "salesperson" in sales.columns
+        else None
+    )
+
     if sales.empty or group_col is None or "revenue" not in sales.columns:
         empty_visual("Strategic revenue drivers need grouped sales data.")
         return
 
     temp = sales.copy()
-    temp["deal_size_metric"] = pd.to_numeric(temp["deal_size"], errors="coerce").fillna(0) if "deal_size" in temp.columns else pd.to_numeric(temp["revenue"], errors="coerce").fillna(0)
-    temp["cycle_metric"] = pd.to_numeric(temp["cycle_days"], errors="coerce").replace(0, np.nan).fillna(30) if "cycle_days" in temp.columns else pd.Series(30, index=temp.index)
-    temp["lead_velocity"] = 1 / temp["cycle_metric"]
-    temp["meeting_cadence"] = 1.25 + (temp["lead_velocity"] * 20)
+
+    temp["revenue"] = pd.to_numeric(temp["revenue"], errors="coerce").fillna(0)
+
+    if "deal_size" in temp.columns:
+        temp["deal_size_metric"] = pd.to_numeric(temp["deal_size"], errors="coerce").fillna(0)
+    else:
+        temp["deal_size_metric"] = temp["revenue"]
+
+    if "cycle_days" in temp.columns:
+        temp["cycle_metric"] = pd.to_numeric(temp["cycle_days"], errors="coerce").replace(0, np.nan).fillna(30)
+    else:
+        temp["cycle_metric"] = 30
+
     if "pipeline_stage" in temp.columns:
         temp["win_flag"] = temp["pipeline_stage"].astype(str).str.lower().eq("closed").astype(int)
+    elif "win_loss_status" in temp.columns:
+        temp["win_flag"] = temp["win_loss_status"].astype(str).str.lower().eq("won").astype(int)
     else:
         temp["win_flag"] = 0
 
+    temp["activity_metric"] = 1
+
     grouped = temp.groupby(group_col, as_index=False).agg(
+        revenue=("revenue", "sum"),
         avg_deal_size=("deal_size_metric", "mean"),
-        lead_velocity=("lead_velocity", "mean"),
-        meeting_cadence=("meeting_cadence", "mean"),
-        team_cohesion=("win_flag", "mean"),
-        projected_revenue=("revenue", "sum"),
-    ).sort_values("projected_revenue", ascending=False).head(6)
+        avg_cycle_days=("cycle_metric", "mean"),
+        win_rate=("win_flag", "mean"),
+        activity=("activity_metric", "sum"),
+    )
+
     if grouped.empty:
         empty_visual("Not enough grouped sales driver data.")
         return
 
-    fig = go.Figure(data=go.Parcoords(
-        line=dict(color=grouped["projected_revenue"], colorscale="Blues", showscale=True),
-        dimensions=[
-            dict(label="Average Deal Size", values=grouped["avg_deal_size"]),
-            dict(label="Lead Velocity", values=grouped["lead_velocity"]),
-            dict(label="Meeting Cadence", values=grouped["meeting_cadence"]),
-            dict(label="Team Cohesion", values=grouped["team_cohesion"]),
-            dict(label="Projected Revenue", values=grouped["projected_revenue"]),
-        ],
-    ))
-    fig.update_layout(title="Strategic Revenue Drivers", margin=dict(l=22, r=22, t=48, b=10))
-    plot(fig, height=height)
+    grouped["sales_velocity"] = 1 / grouped["avg_cycle_days"].replace(0, np.nan)
+    grouped["sales_velocity"] = grouped["sales_velocity"].fillna(0)
 
+    # Normalize drivers into clear 0–100 scores
+    driver_cols = {
+        "Deal Size Score": "avg_deal_size",
+        "Win Rate Score": "win_rate",
+        "Activity Score": "activity",
+        "Velocity Score": "sales_velocity",
+    }
+
+    for score_name, col in driver_cols.items():
+        max_value = grouped[col].max()
+        grouped[score_name] = (grouped[col] / max_value * 100) if max_value > 0 else 0
+
+    grouped["Driver Strength"] = grouped[list(driver_cols.keys())].mean(axis=1)
+
+    top_groups = grouped.sort_values("revenue", ascending=False).head(8)
+
+    fig = px.scatter(
+        top_groups,
+        x="Driver Strength",
+        y="revenue",
+        size="avg_deal_size",
+        color="win_rate",
+        text=group_col,
+        title="Strategic Revenue Drivers",
+        labels={
+            "Driver Strength": "Overall Driver Strength",
+            "revenue": "Revenue",
+            "avg_deal_size": "Average Deal Size",
+            "win_rate": "Win Rate",
+        },
+        hover_data={
+            group_col: True,
+            "revenue": ":,.0f",
+            "avg_deal_size": ":,.0f",
+            "win_rate": ":.1%",
+            "activity": ":,.0f",
+            "avg_cycle_days": ":.1f",
+            "Driver Strength": ":.1f",
+        },
+    )
+
+    fig.update_traces(
+        textposition="top center",
+        marker=dict(
+            sizemin=8,
+            line=dict(width=1)
+        )
+    )
+
+    fig.update_layout(
+        xaxis_title="Driver Strength Score",
+        yaxis_title="Revenue",
+        showlegend=True,
+        margin=dict(l=22, r=22, t=48, b=10),
+    )
+
+    plot(fig, height=height)
 
 def marketing_circular_funnel(data: Dict[str, pd.DataFrame], height: int = 250) -> None:
     marketing = df(data, "marketing")
