@@ -1398,29 +1398,128 @@ def service_mix(data: Dict[str, pd.DataFrame], height: int = 250) -> None:
 def performance_opportunity_matrix(data: Dict[str, pd.DataFrame], height: int = 250) -> None:
     score = regional_scorecard(data)
 
-    if score.empty or "revenue" not in score.columns:
-        empty_visual("Opportunity matrix needs regional scorecard data.")
+    if score.empty or "revenue" not in score.columns or "score" not in score.columns:
+        empty_visual("Strategic opportunity matrix needs regional scorecard data.")
         return
+
+    score = score.copy()
+
+    size_col = "conversions" if "conversions" in score.columns else "transactions" if "transactions" in score.columns else None
+    if size_col is None:
+        score["opportunity_size"] = 20
+        size_col = "opportunity_size"
+
+    revenue_mid = score["revenue"].median()
+    score_mid = score["score"].median()
+
+    def classify(row):
+        if row["revenue"] >= revenue_mid and row["score"] >= score_mid:
+            return "Strategic Leaders"
+        elif row["revenue"] < revenue_mid and row["score"] >= score_mid:
+            return "Growth Opportunities"
+        elif row["revenue"] >= revenue_mid and row["score"] < score_mid:
+            return "Stabilise & Optimise"
+        else:
+            return "Low Priority"
+
+    score["strategic_zone"] = score.apply(classify, axis=1)
 
     fig = px.scatter(
         score,
         x="revenue",
         y="score",
-        size="conversions" if "conversions" in score.columns else "transactions",
-        color="score",
+        size=size_col,
+        color="strategic_zone",
+        text="region",
         hover_name="region",
-        title="Opportunity Matrix",
+        title="Strategic Opportunity Quadrant",
+        labels={
+            "revenue": "Revenue Strength",
+            "score": "Opportunity / Performance Score",
+            "strategic_zone": "Strategic Zone",
+        },
+        hover_data={
+            "revenue": ":,.0f",
+            "score": ":.1f",
+            size_col: ":,.0f",
+            "strategic_zone": True,
+        },
     )
-    fig.update_layout(margin=dict(l=46, r=10, t=36, b=28))
+
+    fig.add_vline(
+        x=revenue_mid,
+        line_dash="dash",
+        line_color="rgba(101,220,255,.55)",
+    )
 
     fig.add_hline(
-        y=score["score"].mean(),
+        y=score_mid,
         line_dash="dash",
-        line_color="rgba(101,220,255,.45)",
+        line_color="rgba(101,220,255,.55)",
+    )
+
+    max_revenue = score["revenue"].max()
+    min_revenue = score["revenue"].min()
+    max_score = score["score"].max()
+    min_score = score["score"].min()
+
+    x_left = min_revenue + (revenue_mid - min_revenue) * 0.45
+    x_right = revenue_mid + (max_revenue - revenue_mid) * 0.55
+    y_bottom = min_score + (score_mid - min_score) * 0.45
+    y_top = score_mid + (max_score - score_mid) * 0.55
+
+    fig.add_annotation(
+        x=x_right,
+        y=y_top,
+        text="Strategic Leaders<br><span style='font-size:10px'>Protect & scale</span>",
+        showarrow=False,
+        font=dict(size=11),
+        opacity=0.85,
+    )
+
+    fig.add_annotation(
+        x=x_left,
+        y=y_top,
+        text="Growth Opportunities<br><span style='font-size:10px'>Invest & expand</span>",
+        showarrow=False,
+        font=dict(size=11),
+        opacity=0.85,
+    )
+
+    fig.add_annotation(
+        x=x_right,
+        y=y_bottom,
+        text="Stabilise & Optimise<br><span style='font-size:10px'>Improve efficiency</span>",
+        showarrow=False,
+        font=dict(size=11),
+        opacity=0.85,
+    )
+
+    fig.add_annotation(
+        x=x_left,
+        y=y_bottom,
+        text="Low Priority<br><span style='font-size:10px'>Monitor</span>",
+        showarrow=False,
+        font=dict(size=11),
+        opacity=0.85,
+    )
+
+    fig.update_traces(
+        textposition="top center",
+        marker=dict(
+            sizemin=8,
+            line=dict(width=1, color="rgba(255,255,255,.45)")
+        )
+    )
+
+    fig.update_layout(
+        margin=dict(l=46, r=10, t=42, b=34),
+        legend_title_text="Strategic Zone",
+        xaxis_title="Revenue Strength",
+        yaxis_title="Opportunity / Performance Score",
     )
 
     plot(fig, height=height)
-
 
 def regional_efficiency(data: Dict[str, pd.DataFrame], height: int = 250) -> None:
     sales = df(data, "sales")
