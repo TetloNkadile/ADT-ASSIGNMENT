@@ -1,4 +1,3 @@
-
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -539,6 +538,62 @@ def money(value: float) -> str:
 
 def pct(value: float) -> str:
     return f"{float(value):.1f}%"
+
+
+def format_forecast_value(metric: str, value: float) -> str:
+    metric_lower = str(metric).lower()
+    value = float(value) if pd.notna(value) else 0.0
+
+    if "roas" in metric_lower:
+        return f"{value:.2f}x"
+    if (
+        "rate" in metric_lower
+        or "roi" in metric_lower
+        or "attendance" in metric_lower
+        or "capacity" in metric_lower
+        or "performance" in metric_lower
+    ):
+        return pct(value)
+    if "risk" in metric_lower:
+        return f"{value:.0f}"
+    if (
+        "cpa" in metric_lower
+        or "deal" in metric_lower
+        or "revenue" in metric_lower
+        or "profit" in metric_lower
+        or "pipeline" in metric_lower
+    ):
+        return money(value)
+    return f"{value:,.0f}"
+
+
+def format_forecast_delta(metric: str, value: float) -> str:
+    metric_lower = str(metric).lower()
+    value = float(value) if pd.notna(value) else 0.0
+    sign = "+" if value >= 0 else ""
+
+    if "roas" in metric_lower:
+        return f"{sign}{value:.2f}x"
+    if (
+        "rate" in metric_lower
+        or "roi" in metric_lower
+        or "attendance" in metric_lower
+        or "capacity" in metric_lower
+        or "performance" in metric_lower
+    ):
+        return f"{sign}{value:.1f}%"
+    if "risk" in metric_lower:
+        return f"{sign}{value:.0f}"
+    if (
+        "cpa" in metric_lower
+        or "deal" in metric_lower
+        or "revenue" in metric_lower
+        or "profit" in metric_lower
+        or "pipeline" in metric_lower
+    ):
+        return f"{sign}{money(value)}"
+    return f"{sign}{value:,.0f}"
+
 
 
 def safe_sum(frame: pd.DataFrame, col: str) -> float:
@@ -1093,6 +1148,45 @@ def forecast_kpi_cards(data: Dict[str, pd.DataFrame]) -> List[Tuple[str, str, st
     metric = st.session_state.get("forecast_metric", "Revenue")
     periods = int(st.session_state.get("forecast_horizon", 6))
     hr_department = st.session_state.get("forecast_hr_department", "All")
+    mode = st.session_state.get("forecast_mode", "Forecast")
+
+    if mode == "Simulation":
+        scenario = linear_regression_simulation(
+            data=data,
+            department=department,
+            metric=metric,
+            periods=periods,
+            demand_shift=float(st.session_state.get("sim_demand_shift", 0)),
+            price_shift=float(st.session_state.get("sim_price_shift", 0)),
+            spend_shift=float(st.session_state.get("sim_spend_shift", 0)),
+            capacity_shift=float(st.session_state.get("sim_capacity_shift", 0)),
+            hr_department=hr_department,
+        )
+
+        forecast_area = department if department != "HR" else f"HR • {hr_department}"
+
+        if scenario.empty:
+            return [
+                ("KPI 1", "Simulation Confidence", "0%", "no simulation data", "→"),
+                ("KPI 2", f"Scenario {metric}", "0", "scenario output", "→"),
+                ("KPI 3", f"{metric} Uplift", "0", "vs baseline", "→"),
+                ("KPI 4", "Forecast Area", forecast_area, "selected view", "→"),
+            ]
+
+        baseline_final = float(pd.to_numeric(scenario["baseline"], errors="coerce").fillna(0).iloc[-1])
+        scenario_final = float(pd.to_numeric(scenario["scenario"], errors="coerce").fillna(0).iloc[-1])
+        uplift_final = float(pd.to_numeric(scenario["uplift"], errors="coerce").fillna(0).iloc[-1])
+        risk_level = str(scenario["risk_level"].iloc[-1]) if "risk_level" in scenario.columns else "Moderate"
+
+        scenario_change = ((scenario_final - baseline_final) / baseline_final * 100) if baseline_final else 0.0
+        confidence = max(72, min(92, 80 + st.session_state.get("simulation_runs", 0)))
+
+        return [
+            ("KPI 1", "Simulation Confidence", f"{confidence}%", "scenario model", "↑"),
+            ("KPI 2", f"Scenario {metric}", format_forecast_value(metric, scenario_final), "adjusted outcome", "↑" if scenario_change >= 0 else "↓"),
+            ("KPI 3", f"{metric} Uplift", format_forecast_delta(metric, uplift_final), "vs baseline", "↑" if uplift_final >= 0 else "↓"),
+            ("KPI 4", "Risk Level", risk_level, forecast_area, "→"),
+        ]
 
     forecast = linear_regression_forecast(
         data=data,
@@ -1101,40 +1195,23 @@ def forecast_kpi_cards(data: Dict[str, pd.DataFrame]) -> List[Tuple[str, str, st
         periods=periods,
         hr_department=hr_department,
     )
+
     actual = forecast[forecast["type"] == "Actual"] if not forecast.empty and "type" in forecast.columns else pd.DataFrame()
     future = forecast[forecast["type"] == "Forecast"] if not forecast.empty and "type" in forecast.columns else pd.DataFrame()
 
-    last_actual = float(actual["value"].iloc[-1]) if not actual.empty else 0.0
-    predicted = float(future["value"].iloc[-1]) if not future.empty else last_actual
+    last_actual = float(pd.to_numeric(actual["value"], errors="coerce").fillna(0).iloc[-1]) if not actual.empty else 0.0
+    predicted = float(pd.to_numeric(future["value"], errors="coerce").fillna(0).iloc[-1]) if not future.empty else last_actual
     change = ((predicted - last_actual) / last_actual * 100) if last_actual else 0.0
-    confidence = max(55, min(95, 62 + len(actual) * 5))
 
-    metric_lower = metric.lower()
-    if "roas" in metric_lower:
-        predicted_value = f"{predicted:.2f}x"
-        metric_note = "predicted return"
-    elif "cpa" in metric_lower or "average deal" in metric_lower or "revenue" in metric_lower or "profit" in metric_lower or "pipeline" in metric_lower:
-        predicted_value = money(predicted)
-        metric_note = "predicted value"
-    elif "win rate" in metric_lower or "attendance" in metric_lower or "capacity" in metric_lower or "roi" in metric_lower:
-        predicted_value = pct(predicted)
-        metric_note = "predicted rate"
-    elif "risk" in metric_lower:
-        predicted_value = f"{predicted:.0f}"
-        metric_note = "predicted high-risk staff"
-    else:
-        predicted_value = f"{predicted:,.0f}"
-        metric_note = "predicted output"
-
+    confidence = float(forecast["accuracy"].iloc[-1]) if not forecast.empty and "accuracy" in forecast.columns else max(55, min(95, 62 + len(actual) * 5))
     forecast_area = department if department != "HR" else f"HR • {hr_department}"
 
     return [
-        ("KPI 1", "Forecast Confidence", f"{confidence}%", "linear regression", "↑"),
-        ("KPI 2", f"Predicted {metric}", predicted_value, metric_note, "↑" if change >= 0 else "↓"),
+        ("KPI 1", "Forecast Confidence", f"{confidence:.1f}%", "linear regression", "↑"),
+        ("KPI 2", f"Predicted {metric}", format_forecast_value(metric, predicted), "predicted output", "↑" if change >= 0 else "↓"),
         ("KPI 3", f"{metric} Change", pct(change), "vs last actual", "↑" if change >= 0 else "↓"),
         ("KPI 4", "Forecast Area", forecast_area, "selected view", "→"),
     ]
-
 
 def render_kpi_row(data: Dict[str, pd.DataFrame], page: str) -> None:
     with st.container(key="kpi_row"):
@@ -2385,30 +2462,45 @@ def lead_to_forecast_funnel(data: Dict[str, pd.DataFrame], height: int = 250) ->
 
 
 def scenario_comparison_chart(data: Dict[str, pd.DataFrame], height: int = 250) -> None:
-    params = current_simulation_params()
-    base = float(executive_kpis(data).get("revenue", 0))
-    demand = params['demand_shift'] / 100
-    price = params['price_shift'] / 100
-    spend = params['spend_shift'] / 100
-    capacity = params['capacity_shift'] / 100
+    department = st.session_state.get("forecast_department", "Overview")
+    metric = st.session_state.get("forecast_metric", "Revenue")
+    periods = int(st.session_state.get("forecast_horizon", 6))
+    hr_department = st.session_state.get("forecast_hr_department", "All")
 
-    scenarios = pd.DataFrame({
-        "scenario": ["Current path", "Demand push", "Price stress", "Capacity plan"],
+    base = linear_regression_simulation(data, department, metric, periods, 0, 0, 0, 0, hr_department)
+    optimistic = linear_regression_simulation(data, department, metric, periods, 12, 6, 8, 5, hr_department)
+    conservative = linear_regression_simulation(data, department, metric, periods, -8, -3, -5, -4, hr_department)
+
+    if base.empty or optimistic.empty or conservative.empty:
+        empty_visual("Scenario comparison needs Linear Regression baseline data.")
+        return
+
+    rows = pd.DataFrame({
+        "scenario": ["Baseline", "Optimistic", "Conservative"],
         "forecast_value": [
-            base * (1.00 + params['net_lift'] * 0.25),
-            base * (1.03 + demand * 0.90 + spend * 0.25),
-            base * (0.98 + price * 0.85),
-            base * (1.01 + capacity * 0.80 + demand * 0.25),
+            float(pd.to_numeric(base["scenario"], errors="coerce").fillna(0).iloc[-1]),
+            float(pd.to_numeric(optimistic["scenario"], errors="coerce").fillna(0).iloc[-1]),
+            float(pd.to_numeric(conservative["scenario"], errors="coerce").fillna(0).iloc[-1]),
         ],
     })
 
-    fig = px.bar(scenarios, x="scenario", y="forecast_value", title=f"Scenario Comparison • {params['metric']}")
+    fig = px.bar(
+        rows,
+        x="scenario",
+        y="forecast_value",
+        text=rows["forecast_value"].apply(lambda x: format_forecast_value(metric, x)),
+        title=f"Scenario Comparison • {metric}",
+    )
+
+    fig.update_traces(textposition="outside")
+    fig.update_layout(
+        xaxis_title="Scenario",
+        yaxis_title=metric,
+        showlegend=False,
+    )
+
     plot(fig, height=height)
 
-
-
-# LINEAR REGRESSION FORECAST/SIMULATION OVERRIDES
-# These override the earlier forecast visuals without changing live-data logic or other pages.
 def forecast_confidence_chart(data: Dict[str, pd.DataFrame], height: int = 520, horizon: int = 10) -> None:
     department = st.session_state.get("forecast_department", "Overview")
     metric = st.session_state.get("forecast_metric", "Revenue")
@@ -2460,14 +2552,21 @@ def linear_regression_simulation_chart(data: Dict[str, pd.DataFrame], height: in
         empty_visual("Simulation needs forecast output from the Linear Regression model.")
         return
 
+    scenario = scenario.copy()
+    scenario["baseline"] = pd.to_numeric(scenario["baseline"], errors="coerce").fillna(0)
+    scenario["scenario"] = pd.to_numeric(scenario["scenario"], errors="coerce").fillna(0)
+    scenario["uplift"] = pd.to_numeric(scenario["uplift"], errors="coerce").fillna(0)
+
     fig = go.Figure()
+
     fig.add_trace(go.Scatter(
         x=scenario["period"],
         y=scenario["baseline"],
         mode="lines+markers",
-        name="Linear Regression Baseline",
+        name="Baseline Forecast",
         line=dict(width=2.4, color="#65DCFF"),
     ))
+
     fig.add_trace(go.Scatter(
         x=scenario["period"],
         y=scenario["scenario"],
@@ -2475,28 +2574,39 @@ def linear_regression_simulation_chart(data: Dict[str, pd.DataFrame], height: in
         name="Scenario Outcome",
         line=dict(width=2.4, dash="dash", color="#37DC8B"),
     ))
-    fig.update_layout(title=f"{department} {metric} Simulation • Linear Regression Baseline")
-    plot(fig, height=height)
 
-    total_uplift = float(scenario["uplift"].sum()) if "uplift" in scenario.columns else 0
-    risk_level = scenario["risk_level"].iloc[-1] if "risk_level" in scenario.columns and not scenario.empty else "Moderate"
-    render_html(
-        "<div class='forecast-summary-strip'>"
-        f"<b>Simulation outcome:</b> {money(total_uplift)} total uplift/loss &nbsp;&nbsp; "
-        f"<b>Risk level:</b> {risk_level} &nbsp;&nbsp; "
-        f"<b>Model:</b> Linear Regression baseline with scenario assumptions"
-        "</div>"
+    fig.update_layout(
+        title=f"{department} {metric} Simulation • Linear Regression Baseline vs Scenario",
+        yaxis_title=metric,
+        xaxis_title="Forecast Period",
     )
 
+    plot(fig, height=height)
+
+    baseline_final = float(scenario["baseline"].iloc[-1])
+    scenario_final = float(scenario["scenario"].iloc[-1])
+    uplift_final = float(scenario["uplift"].iloc[-1])
+    risk_level = scenario["risk_level"].iloc[-1] if "risk_level" in scenario.columns and not scenario.empty else "Moderate"
+
+    render_html(
+        "<div class='forecast-summary-strip'>"
+        f"<b>Baseline:</b> {format_forecast_value(metric, baseline_final)} &nbsp;&nbsp; "
+        f"<b>Scenario:</b> {format_forecast_value(metric, scenario_final)} &nbsp;&nbsp; "
+        f"<b>Uplift:</b> {format_forecast_delta(metric, uplift_final)} &nbsp;&nbsp; "
+        f"<b>Risk level:</b> {risk_level} &nbsp;&nbsp; "
+        f"<b>Model:</b> Linear Regression baseline with safe scenario adjustment"
+        "</div>"
+    )
 
 def scenario_comparison_chart(data: Dict[str, pd.DataFrame], height: int = 250) -> None:
     department = st.session_state.get("forecast_department", "Overview")
     metric = st.session_state.get("forecast_metric", "Revenue")
     periods = int(st.session_state.get("forecast_horizon", 6))
+    hr_department = st.session_state.get("forecast_hr_department", "All")
 
-    base = linear_regression_simulation(data, department, metric, periods, 0, 0, 0, 0, st.session_state.get("forecast_hr_department", "All"))
-    optimistic = linear_regression_simulation(data, department, metric, periods, 12, 6, 8, 5, st.session_state.get("forecast_hr_department", "All"))
-    conservative = linear_regression_simulation(data, department, metric, periods, -8, -3, -5, -4, st.session_state.get("forecast_hr_department", "All"))
+    base = linear_regression_simulation(data, department, metric, periods, 0, 0, 0, 0, hr_department)
+    optimistic = linear_regression_simulation(data, department, metric, periods, 12, 6, 8, 5, hr_department)
+    conservative = linear_regression_simulation(data, department, metric, periods, -8, -3, -5, -4, hr_department)
 
     if base.empty or optimistic.empty or conservative.empty:
         empty_visual("Scenario comparison needs Linear Regression baseline data.")
@@ -2505,15 +2615,28 @@ def scenario_comparison_chart(data: Dict[str, pd.DataFrame], height: int = 250) 
     rows = pd.DataFrame({
         "scenario": ["Baseline", "Optimistic", "Conservative"],
         "forecast_value": [
-            float(base["scenario"].iloc[-1]),
-            float(optimistic["scenario"].iloc[-1]),
-            float(conservative["scenario"].iloc[-1]),
+            float(pd.to_numeric(base["scenario"], errors="coerce").fillna(0).iloc[-1]),
+            float(pd.to_numeric(optimistic["scenario"], errors="coerce").fillna(0).iloc[-1]),
+            float(pd.to_numeric(conservative["scenario"], errors="coerce").fillna(0).iloc[-1]),
         ],
     })
 
-    fig = px.bar(rows, x="scenario", y="forecast_value", title=f"Scenario Comparison • {metric}")
-    plot(fig, height=height)
+    fig = px.bar(
+        rows,
+        x="scenario",
+        y="forecast_value",
+        text=rows["forecast_value"].apply(lambda x: format_forecast_value(metric, x)),
+        title=f"Scenario Comparison • {metric}",
+    )
 
+    fig.update_traces(textposition="outside")
+    fig.update_layout(
+        xaxis_title="Scenario",
+        yaxis_title=metric,
+        showlegend=False,
+    )
+
+    plot(fig, height=height)
 
 def report_source_connectivity_visual(data: Dict[str, pd.DataFrame], height: int = 265) -> None:
     sources = pd.DataFrame({
