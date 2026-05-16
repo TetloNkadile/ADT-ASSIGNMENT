@@ -2693,6 +2693,7 @@ def report_builder_compact(data: Dict[str, pd.DataFrame]) -> None:
     advertising = df(data, "advertising")
     hr = df(data, "hr")
     customers = df(data, "customers")
+    web = df(data, "web")
 
     title = st.text_input(
         "Report title",
@@ -2710,9 +2711,14 @@ def report_builder_compact(data: Dict[str, pd.DataFrame]) -> None:
         )
 
     with control_b:
+        if "region" in sales.columns and not sales.empty:
+            region_options = ["All"] + sorted(sales["region"].dropna().astype(str).unique().tolist())
+        else:
+            region_options = ["All"]
+
         report_region = st.selectbox(
             "Report region",
-            ["All"] + sorted(sales["region"].dropna().unique().tolist()) if "region" in sales.columns else ["All"],
+            region_options,
             key="report_region_filter",
         )
 
@@ -2753,17 +2759,16 @@ def report_builder_compact(data: Dict[str, pd.DataFrame]) -> None:
         "advertising": advertising.copy(),
         "hr": hr.copy(),
         "customers": customers.copy(),
-        "web": df(data, "web").copy(),
+        "web": web.copy(),
     }
 
     if report_region != "All":
         for key, frame in filtered_data.items():
             if isinstance(frame, pd.DataFrame) and not frame.empty and "region" in frame.columns:
-                filtered_data[key] = frame[frame["region"] == report_region]
+                filtered_data[key] = frame[frame["region"].astype(str) == str(report_region)]
 
     k = executive_kpis(filtered_data)
     ai = make_ai(filtered_data, "Report")
-
     sales_metrics_data = sales_metrics(filtered_data)
     marketing_metrics_data = marketing_metrics(filtered_data)
     advertising_metrics_data = advertising_metrics(filtered_data)
@@ -2846,9 +2851,10 @@ def report_builder_compact(data: Dict[str, pd.DataFrame]) -> None:
             ])
 
     if "Forecast Summary" in selected_sections:
+        forecast_department = "Overview" if report_department in ["Executive Overview", "Regional Performance"] else report_department
         forecast = linear_regression_forecast(
             filtered_data,
-            department="Overview" if report_department == "Executive Overview" else report_department,
+            department=forecast_department,
             metric=report_kpi,
             periods=6,
             hr_department="All",
@@ -2859,7 +2865,7 @@ def report_builder_compact(data: Dict[str, pd.DataFrame]) -> None:
         if not forecast.empty and "type" in forecast.columns:
             forecast_rows = forecast[forecast["type"] == "Forecast"]
             if not forecast_rows.empty:
-                final_forecast = float(forecast_rows["value"].iloc[-1])
+                final_forecast = float(pd.to_numeric(forecast_rows["value"], errors="coerce").fillna(0).iloc[-1])
                 accuracy = float(forecast["accuracy"].iloc[-1]) if "accuracy" in forecast.columns else 0
                 report_lines.extend([
                     f"Forecast Metric: {report_kpi}",
@@ -2868,15 +2874,9 @@ def report_builder_compact(data: Dict[str, pd.DataFrame]) -> None:
                     "",
                 ])
             else:
-                report_lines.extend([
-                    "Forecast output was not available for the selected report configuration.",
-                    "",
-                ])
+                report_lines.extend(["Forecast output was not available for the selected report configuration.", ""])
         else:
-            report_lines.extend([
-                "Forecast output was not available for the selected report configuration.",
-                "",
-            ])
+            report_lines.extend(["Forecast output was not available for the selected report configuration.", ""])
 
     if "Recommendations" in selected_sections:
         report_lines.append("RECOMMENDED ACTIONS")
@@ -2887,55 +2887,20 @@ def report_builder_compact(data: Dict[str, pd.DataFrame]) -> None:
     report_text = "\n".join(report_lines)
 
     st.text_area(
-      "Report preview",
-       report_text,
-       height=260,
-       key="report_builder_preview_dynamic",
-   )
-
-   st.download_button(
-     "Download filtered report",
-      report_text,
-      file_name=f"cyber_nova_{report_department.lower().replace(' ', '_')}_report.txt",
-      mime="text/plain",
-      use_container_width=True,
-      key="report_builder_download_dynamic",
-   )
-
-    k = executive_kpis(data)
-    lines = [
-        title,
-        "=" * len(title),
-        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"Primary chart: {chart_type}",
-        "",
-        "SECTIONS",
-        ", ".join(selected_sections),
-        "",
-        "EXECUTIVE SUMMARY",
-        str(ai["summary"]),
-        "",
-        "KPI SUMMARY",
-        f"Revenue: {money(k.get('revenue', 0))}",
-        f"Profit: {money(k.get('profit', 0))}",
-        f"ROI: {pct(k.get('roi', 0))}",
-        "",
-        "RECOMMENDED ACTIONS",
-    ]
-    for action in ai["actions"]:
-        lines.append(f"- {action}")
-
-    report_text = "\n".join(lines)
-    st.text_area("Report preview", report_text, height=260, key="report_builder_preview")
-    st.download_button(
-        "Download report outline",
+        "Report preview",
         report_text,
-        file_name="nexus_bi_report.txt",
-        mime="text/plain",
-        use_container_width=True,
-        key="report_builder_download",
+        height=260,
+        key="report_builder_preview_dynamic",
     )
 
+    st.download_button(
+        "Download filtered report",
+        report_text,
+        file_name=f"cyber_nova_{report_department.lower().replace(' ', '_')}_report.txt",
+        mime="text/plain",
+        use_container_width=True,
+        key="report_builder_download_dynamic",
+    )
 
 def render_standard_visuals(page: str, data: Dict[str, pd.DataFrame]) -> None:
     with st.container(key="visual_grid"):
