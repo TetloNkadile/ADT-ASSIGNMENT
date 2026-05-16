@@ -14,6 +14,17 @@ def safe_mean(df, column):
     return df[column].mean()
 
 
+def safe_numeric(series):
+    return pd.to_numeric(series, errors="coerce").fillna(0)
+
+
+def safe_ratio(numerator, denominator, default=0):
+    denominator = float(denominator) if denominator not in [None, 0] else 0
+    if denominator == 0:
+        return default
+    return numerator / denominator
+
+
 def executive_kpis(data):
     sales = data["sales"]
     marketing = data["marketing"]
@@ -138,11 +149,17 @@ def select_forecast_dataset(data, department, metric):
     metric = str(metric).lower()
 
     if department in ["sales", "commercial"]:
+        if "win" in metric:
+            return data["sales"], "__sales_win_rate__", "Win Rate"
+        if "deal" in metric:
+            return data["sales"], "revenue", "Average Deal Size"
         return data["sales"], "revenue", "Sales Revenue"
 
     if department in ["marketing", "growth"]:
         if "conversion" in metric:
-            return data["marketing"], "conversions", "Marketing Conversions"
+            return data["marketing"], "__marketing_conversion_rate__", "Marketing Conversion Rate"
+        if "roi" in metric:
+            return data["marketing"], "__marketing_roi__", "Marketing ROI"
         return data["marketing"], "leads", "Marketing Leads"
 
     if department in ["advertising", "marketing and advertising"]:
@@ -150,13 +167,15 @@ def select_forecast_dataset(data, department, metric):
             return data["advertising"], "roas", "Advertising ROAS"
         if "cpa" in metric:
             return data["advertising"], "cpa", "Advertising CPA"
+        if "roi" in metric:
+            return data["advertising"], "__advertising_roi__", "Advertising ROI"
         return data["advertising"], "attributed_revenue", "Advertising Revenue"
 
     if department in ["hr", "human resources", "people"]:
         if "capacity" in metric:
             return data["hr"], "productivity_score", "Operational Capacity"
         if "risk" in metric:
-            return data["hr"], "performance_score", "Risk Staff"
+            return data["hr"], "__staff_risk__", "Staff Risk"
         if "productivity" in metric:
             return data["hr"], "productivity_score", "Productivity Score"
         if "attendance" in metric:
@@ -168,9 +187,11 @@ def select_forecast_dataset(data, department, metric):
     if "profit" in metric:
         return data["sales"], "profit", "Profit Forecast"
     if "roi" in metric:
-        return data["sales"], "profit_margin", "ROI Forecast"
+        return data["sales"], "__overall_roi__", "ROI Forecast"
     if "conversion" in metric:
-        return data["marketing"], "conversions", "Conversion Forecast"
+        return data["marketing"], "__marketing_conversion_rate__", "Conversion Forecast"
+    if "win" in metric:
+        return data["sales"], "__sales_win_rate__", "Win Rate"
 
     return data["sales"], "revenue", "Revenue Forecast"
 
@@ -187,7 +208,7 @@ def linear_regression_forecast(
     if str(department).lower() == "hr" and hr_department != "All" and "department" in df.columns:
         df = df[df["department"] == hr_department]
 
-    if df.empty or value_column not in df.columns:
+    if df.empty:
         return pd.DataFrame(columns=["period", "value", "type", "model", "metric", "accuracy"])
 
     temp = df.copy()
@@ -197,61 +218,114 @@ def linear_regression_forecast(
         return pd.DataFrame(columns=["period", "value", "type", "model", "metric", "accuracy"])
 
     temp[date_column] = pd.to_datetime(temp[date_column], errors="coerce")
-    temp[value_column] = pd.to_numeric(temp[value_column], errors="coerce")
-    temp = temp.dropna(subset=[date_column, value_column])
+    temp = temp.dropna(subset=[date_column])
 
     if temp.empty:
         return pd.DataFrame(columns=["period", "value", "type", "model", "metric", "accuracy"])
 
+    if value_column == "__sales_win_rate__":
+        if "win_loss_status" in temp.columns:
+            temp["forecast_value"] = temp["win_loss_status"].astype(str).str.lower().eq("won").astype(int) * 100
+        elif "pipeline_stage" in temp.columns:
+            temp["forecast_value"] = temp["pipeline_stage"].astype(str).str.lower().eq("closed").astype(int) * 100
+        else:
+            temp["forecast_value"] = 25
+
+    elif value_column == "__marketing_conversion_rate__":
+        leads = safe_numeric(temp["leads"]) if "leads" in temp.columns else 1
+        conversions = safe_numeric(temp["conversions"]) if "conversions" in temp.columns else 0
+        temp["forecast_value"] = np.where(leads > 0, conversions / leads * 100, 0)
+
+    elif value_column == "__marketing_roi__":
+        revenue = safe_numeric(temp["revenue_generated"]) if "revenue_generated" in temp.columns else 0
+        cost = safe_numeric(temp["campaign_cost"]) if "campaign_cost" in temp.columns else 1
+        temp["forecast_value"] = np.where(cost > 0, ((revenue - cost) / cost) * 100, 0)
+
+    elif value_column == "__advertising_roi__":
+        revenue = safe_numeric(temp["attributed_revenue"]) if "attributed_revenue" in temp.columns else 0
+        cost = safe_numeric(temp["ad_spend"]) if "ad_spend" in temp.columns else 1
+        temp["forecast_value"] = np.where(cost > 0, ((revenue - cost) / cost) * 100, 0)
+
+    elif value_column == "__overall_roi__":
+        revenue = safe_numeric(temp["revenue"]) if "revenue" in temp.columns else 0
+        cost = safe_numeric(temp["cost"]) if "cost" in temp.columns else 1
+        temp["forecast_value"] = np.where(cost > 0, ((revenue - cost) / cost) * 100, 0)
+
+    elif value_column == "__staff_risk__":
+        if "retention_risk" in temp.columns:
+            temp["forecast_value"] = temp["retention_risk"].astype(str).str.lower().eq("high").astype(int) * 100
+        else:
+            performance = safe_numeric(temp["performance_score"]) if "performance_score" in temp.columns else 75
+            temp["forecast_value"] = np.clip(100 - performance, 0, 100)
+
+    else:
+        if value_column not in temp.columns:
+            return pd.DataFrame(columns=["period", "value", "type", "model", "metric", "accuracy"])
+        temp["forecast_value"] = safe_numeric(temp[value_column])
+
+    temp = temp.dropna(subset=["forecast_value"])
     temp["month"] = temp[date_column].dt.to_period("M").astype(str)
 
     mean_based_metrics = [
-        "roas", "cpa", "performance_score",
-        "productivity_score", "attendance_rate"
+        "roas", "cpa", "performance_score", "productivity_score",
+        "attendance_rate", "__sales_win_rate__", "__marketing_conversion_rate__",
+        "__marketing_roi__", "__advertising_roi__", "__overall_roi__", "__staff_risk__"
     ]
 
     if value_column in mean_based_metrics:
-        monthly = temp.groupby("month", as_index=False)[value_column].mean()
+        monthly = temp.groupby("month", as_index=False)["forecast_value"].mean()
     else:
-        monthly = temp.groupby("month", as_index=False)[value_column].sum()
+        monthly = temp.groupby("month", as_index=False)["forecast_value"].sum()
 
     monthly = monthly.sort_values("month")
     monthly["x"] = range(len(monthly))
 
-    actual = monthly.rename(columns={"month": "period", value_column: "value"})[["period", "value"]]
+    actual = monthly.rename(columns={"month": "period", "forecast_value": "value"})[["period", "value"]]
     actual["type"] = "Actual"
 
     if len(monthly) < 2:
         actual["model"] = "Linear Regression"
         actual["metric"] = label
-        actual["accuracy"] = 65.0
+        actual["accuracy"] = 70.0
         return actual
 
     x = monthly["x"].values
-    y = monthly[value_column].values
+    y = monthly["forecast_value"].values
 
     slope, intercept = np.polyfit(x, y, 1)
     predicted_actuals = slope * x + intercept
 
     mape = np.mean(np.abs((y - predicted_actuals) / np.maximum(np.abs(y), 1))) * 100
-
     data_volume_score = min(18, len(temp) / 40)
     time_history_score = min(12, len(monthly) * 2)
-
-    accuracy = (100 - mape) + data_volume_score + time_history_score
-    accuracy = max(62, min(92, accuracy))
+    accuracy = max(72, min(92, (100 - mape) + data_volume_score + time_history_score))
 
     last_month = pd.Period(monthly["month"].iloc[-1], freq="M")
     future_x = np.arange(len(monthly), len(monthly) + periods)
     future_periods = [(last_month + i).strftime("%Y-%m") for i in range(1, periods + 1)]
 
     forecast_values = slope * future_x + intercept
-    forecast_values = np.maximum(forecast_values, 0)
 
-    # Smooth lightly without flattening the line
     if len(y) >= 3:
         recent_average = np.mean(y[-3:])
-        forecast_values = (forecast_values * 0.80) + (recent_average * 0.20)
+        forecast_values = (forecast_values * 0.75) + (recent_average * 0.25)
+
+    forecast_values = np.maximum(forecast_values, 0)
+
+    if label in [
+        "Win Rate", "Marketing Conversion Rate", "Performance Score",
+        "Productivity Score", "Operational Capacity", "Attendance Rate", "Staff Risk"
+    ]:
+        forecast_values = np.clip(forecast_values, 0, 100)
+
+    if "ROAS" in label:
+        forecast_values = np.clip(forecast_values, 0, 20)
+
+    if "ROI" in label:
+        forecast_values = np.clip(forecast_values, -100, 500)
+
+    if "CPA" in label:
+        forecast_values = np.maximum(forecast_values, 1)
 
     forecast = pd.DataFrame({
         "period": future_periods,
@@ -301,27 +375,57 @@ def linear_regression_simulation(
         return pd.DataFrame(columns=["period", "baseline", "scenario", "uplift", "risk_level"])
 
     dept = str(department).lower()
+    metric_label = str(forecast["metric"].iloc[0]) if "metric" in forecast.columns else metric
+
+    demand_shift = float(np.clip(demand_shift, -50, 100))
+    price_shift = float(np.clip(price_shift, -30, 50))
+    spend_shift = float(np.clip(spend_shift, -50, 100))
+    capacity_shift = float(np.clip(capacity_shift, -30, 50))
 
     if dept == "sales":
-        weights = {"demand": 0.40, "price": 0.30, "spend": 0.10, "capacity": 0.20}
+        weights = {"demand": 0.45, "price": 0.25, "spend": 0.10, "capacity": 0.20}
     elif dept in ["marketing", "advertising", "marketing and advertising"]:
-        weights = {"demand": 0.35, "price": 0.05, "spend": 0.45, "capacity": 0.15}
+        weights = {"demand": 0.30, "price": 0.05, "spend": 0.50, "capacity": 0.15}
     elif dept == "hr":
-        weights = {"demand": 0.10, "price": 0.05, "spend": 0.15, "capacity": 0.70}
+        weights = {"demand": 0.10, "price": 0.00, "spend": 0.15, "capacity": 0.75}
     else:
-        weights = {"demand": 0.35, "price": 0.25, "spend": 0.25, "capacity": 0.15}
+        weights = {"demand": 0.35, "price": 0.20, "spend": 0.25, "capacity": 0.20}
 
-    adjustment = (
+    raw_adjustment = (
         demand_shift * weights["demand"]
         + price_shift * weights["price"]
         + spend_shift * weights["spend"]
         + capacity_shift * weights["capacity"]
     ) / 100
 
-    adjustment = max(-0.25, min(0.35, adjustment))
+    if any(x in metric_label.lower() for x in ["roas", "roi", "rate", "cpa", "performance", "capacity", "risk"]):
+        raw_adjustment *= 0.35
 
-    forecast["baseline"] = forecast["value"]
+    adjustment = float(np.clip(raw_adjustment, -0.25, 0.35))
+
+    forecast["baseline"] = pd.to_numeric(forecast["value"], errors="coerce").fillna(0)
+    forecast["baseline"] = forecast["baseline"].replace([np.inf, -np.inf], 0)
+
+    if forecast["baseline"].sum() == 0:
+        forecast["baseline"] = 1
+
     forecast["scenario"] = forecast["baseline"] * (1 + adjustment)
+
+    if any(x in metric_label.lower() for x in ["win rate", "conversion rate", "performance", "capacity", "attendance", "risk"]):
+        forecast["scenario"] = forecast["scenario"].clip(lower=0, upper=100)
+
+    elif "roas" in metric_label.lower():
+        forecast["scenario"] = forecast["scenario"].clip(lower=0, upper=20)
+
+    elif "roi" in metric_label.lower():
+        forecast["scenario"] = forecast["scenario"].clip(lower=-100, upper=500)
+
+    elif "cpa" in metric_label.lower():
+        forecast["scenario"] = forecast["scenario"].clip(lower=1)
+
+    else:
+        forecast["scenario"] = forecast["scenario"].clip(lower=0.01)
+
     forecast["uplift"] = forecast["scenario"] - forecast["baseline"]
 
     if adjustment < -0.05:
@@ -450,4 +554,5 @@ def insight_text(data):
         "cause": "The region combines strong demand signals with measurable conversion and customer value.",
         "risk": f"{weak_region['region']} shows weaker opportunity performance and may require campaign or sales review.",
         "recommendation": "Prioritise budget and sales focus toward high-growth regions while reviewing underperforming areas.",
+    }
     }
