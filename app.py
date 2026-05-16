@@ -2886,20 +2886,34 @@ def report_builder_compact(data: Dict[str, pd.DataFrame]) -> None:
 
     report_text = "\n".join(report_lines)
 
+    # Force the preview widget to refresh whenever the report configuration or filtered KPI values change.
+    preview_signature = abs(hash((
+        report_department,
+        report_region,
+        report_kpi,
+        chart_type,
+        tuple(selected_sections),
+        round(float(k.get("revenue", 0)), 2),
+        round(float(k.get("profit", 0)), 2),
+        round(float(k.get("roi", 0)), 2),
+        round(float(k.get("conversions", 0)), 2),
+    )))
+
     st.text_area(
         "Report preview",
-        report_text,
+        value=report_text,
         height=260,
-        key="report_builder_preview_dynamic",
+        key=f"report_builder_preview_dynamic_{preview_signature}",
+        disabled=True,
     )
 
     st.download_button(
         "Download filtered report",
-        report_text,
-        file_name=f"cyber_nova_{report_department.lower().replace(' ', '_')}_report.txt",
+        data=report_text,
+        file_name=f"cyber_nova_{report_department.lower().replace(' ', '_')}_{report_region.lower().replace(' ', '_')}_report.txt",
         mime="text/plain",
         use_container_width=True,
-        key="report_builder_download_dynamic",
+        key=f"report_builder_download_dynamic_{preview_signature}",
     )
 
 def render_standard_visuals(page: str, data: Dict[str, pd.DataFrame]) -> None:
