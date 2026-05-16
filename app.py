@@ -2887,20 +2887,20 @@ def report_builder_compact(data: Dict[str, pd.DataFrame]) -> None:
     report_text = "\n".join(report_lines)
 
     st.text_area(
-        "Report preview",
-        report_text,
-        height=260,
-        key="report_builder_preview",
-    )
+      "Report preview",
+       report_text,
+       height=260,
+       key="report_builder_preview_dynamic",
+   )
 
-    st.download_button(
-        "Download filtered report",
-        report_text,
-        file_name=f"cyber_nova_{report_department.lower().replace(' ', '_')}_report.txt",
-        mime="text/plain",
-        use_container_width=True,
-        key="report_builder_download",
-    )
+   st.download_button(
+     "Download filtered report",
+      report_text,
+      file_name=f"cyber_nova_{report_department.lower().replace(' ', '_')}_report.txt",
+      mime="text/plain",
+      use_container_width=True,
+      key="report_builder_download_dynamic",
+   )
 
     k = executive_kpis(data)
     lines = [
