@@ -206,6 +206,10 @@ def generate_tick(rows_per_tick=8, history=False):
         "conversions",
         "ad_spend",
         "attributed_revenue",
+        "roas",
+        "cpa",
+        "cpc",
+        "ctr",
     ]
 
     customer_fields = [
@@ -269,6 +273,11 @@ def generate_tick(rows_per_tick=8, history=False):
             ad_conversions = max(1, int(clicks * random.uniform(0.03, 0.22)))
             attributed_revenue = round(ad_conversions * random.uniform(2500, 16000), 2)
 
+            roas = round(attributed_revenue / ad_spend, 2) if ad_spend > 0 else 0
+            cpa = round(ad_spend / ad_conversions, 2) if ad_conversions > 0 else 0
+            cpc = round(ad_spend / clicks, 2) if clicks > 0 else 0
+            ctr = round((clicks / impressions) * 100, 2) if impressions > 0 else 0
+
             append_csv(ADVERTISING_FILE, advertising_fields, {
                 "ad_id": f"AD-{random.randint(1000, 9999)}",
                 "campaign_id": campaign_id,
@@ -285,6 +294,10 @@ def generate_tick(rows_per_tick=8, history=False):
                 "conversions": ad_conversions,
                 "ad_spend": ad_spend,
                 "attributed_revenue": attributed_revenue,
+                "roas": roas,
+                "cpa": cpa,
+                "cpc": cpc,
+                "ctr": ctr,
             })
 
         conversion_status = random.choices(
